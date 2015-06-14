@@ -113,64 +113,71 @@ void getFileCommand(uint32_t index, const char *path) {
     if (ret != MDERR_OK) {
         puts("[-] Can not connect to com.apple.dt.fetchsymbols service.");
     } else {
-        uint64_t rsize = 0;
-        rsize = AMDServiceConnectionSend(serviceConnection, &kCommand_GetFile, sizeof(uint32_t));
-        if (rsize != sizeof(uint32_t)) {
-            puts("[-] Can not send message to com.apple.dt.fetchsymbols service. Size mismatch.");
-        } else {
-            uint32_t commandConfirmation = 0;
-            AMDServiceConnectionReceive(serviceConnection, &commandConfirmation, sizeof(uint32_t));
-            /*
-             * Command confirmation. Sent for all commands.
-             */
-            if (commandConfirmation != kCommand_GetFile) {
-                puts("[!] com.apple.dt.fetchsymbols service internal error.");
-            } else {
-                uint32_t bsindex = bswap_32(index);
-                rsize = AMDServiceConnectionSend(serviceConnection, &bsindex, sizeof(uint32_t));
+        CFDictionaryRef imageList = (CFDictionaryRef)listFilesPlistCommand();
+        if (imageList && (CFGetTypeID(imageList) == CFDictionaryGetTypeID())) {
+            CFArrayRef files = CFDictionaryGetValue(imageList, CFSTR("files"));
+            if (files && (CFGetTypeID(files) == CFArrayGetTypeID()) && (CFArrayGetCount(files) > index)) {
+                uint64_t rsize = 0;
+                rsize = AMDServiceConnectionSend(serviceConnection, &kCommand_GetFile, sizeof(uint32_t));
                 if (rsize != sizeof(uint32_t)) {
-                    puts("[-] Failed to request file size.");
+                    puts("[-] Can not send message to com.apple.dt.fetchsymbols service. Size mismatch.");
                 } else {
-                    uint64_t size = 0;
-                    AMDServiceConnectionReceive(serviceConnection, &size, sizeof(uint64_t));
-                    size = bswap_64(size);
-                    if (size != 0) {
-                        int file = 0;
-                        if (!access(path, F_OK)) {
-                            file = open(path, O_RDWR | O_CREAT);
-                            chmod(path, S_IROTH | S_IRGRP | S_IWUSR | S_IRUSR);
-                        }
-                        else
-                            file = open(path, O_RDWR);
-                        
-                        if (file >= 0) {
-                            /*
-                             * Set file size.
-                             */
-                            lseek(file, size-1, SEEK_SET);
-                            write(file, "", 1);
-                            
-                            void *map = mmap(0, size, PROT_WRITE | PROT_READ, MAP_SHARED, file, 0);
-                            if (map != MAP_FAILED) {
-                                printf("[*] Receiving %s...\n", DTPathToFileAtIndex(index));
-                                rsize = AMDServiceConnectionReceive(serviceConnection, map, size);
-                                while (rsize < size) {
-                                    rsize += AMDServiceConnectionReceive(serviceConnection, (void *)(map + rsize), size-rsize);
-                                    if (rsize <= 0) {
-                                        puts("Error");
-                                    }
-                                    printf("[*] Received %3.2f MB of %3.2f MB (%llu%%).\n\e[1A", (double)rsize/(1024*1024), (double)size/(1024*1024),(uint64_t)((double)rsize/(double)size*100));
+                    uint32_t commandConfirmation = 0;
+                    AMDServiceConnectionReceive(serviceConnection, &commandConfirmation, sizeof(uint32_t));
+                    /*
+                     * Command confirmation. Sent for all commands.
+                     */
+                    if (commandConfirmation != kCommand_GetFile) {
+                        puts("[!] com.apple.dt.fetchsymbols service internal error.");
+                    } else {
+                        uint32_t bsindex = bswap_32(index);
+                        rsize = AMDServiceConnectionSend(serviceConnection, &bsindex, sizeof(uint32_t));
+                        if (rsize != sizeof(uint32_t)) {
+                            puts("[-] Failed to request file size.");
+                        } else {
+                            uint64_t size = 0;
+                            AMDServiceConnectionReceive(serviceConnection, &size, sizeof(uint64_t));
+                            size = bswap_64(size);
+                            if (size != 0) {
+                                int file = 0;
+                                if (access(path, F_OK) == -1) {
+                                    file = open(path, O_RDWR | O_CREAT);
+                                    chmod(path, S_IROTH | S_IRGRP | S_IWUSR | S_IRUSR);
                                 }
-                                if (rsize == size) printf("\n[+] Done receiving %s.\n", DTPathToFileAtIndex(index));
-                                munmap(map, size);
-                            } else puts("[-] Error. Please restart the program.");
-                            close(file);
-                        } else printf("[-] File %s can not be opened.", path);
-                    } else puts("[-] Error. File size is zero.");
+                                else
+                                    file = open(path, O_RDWR);
+                                
+                                if (file >= 0) {
+                                    /*
+                                     * Set file size.
+                                     */
+                                    lseek(file, size-1, SEEK_SET);
+                                    write(file, "", 1);
+                                    
+                                    void *map = mmap(0, size, PROT_WRITE | PROT_READ, MAP_SHARED, file, 0);
+                                    if (map != MAP_FAILED) {
+                                        printf("[*] Receiving %s...\n", DTPathToFileAtIndex(index));
+                                        rsize = AMDServiceConnectionReceive(serviceConnection, map, size);
+                                        while (rsize < size) {
+                                            rsize += AMDServiceConnectionReceive(serviceConnection, (void *)(map + rsize), size-rsize);
+                                            if (rsize <= 0) {
+                                                puts("Error");
+                                            }
+                                            printf("[*] Received %3.2f MB of %3.2f MB (%llu%%).\n\e[1A", (double)rsize/(1024*1024), (double)size/(1024*1024),(uint64_t)((double)rsize/(double)size*100));
+                                        }
+                                        if (rsize == size) printf("\n[+] Done receiving %s.\n", DTPathToFileAtIndex(index));
+                                        munmap(map, size);
+                                    } else puts("[-] Error. Please restart the program.");
+                                    close(file);
+                                } else printf("[-] File \"%s\" can not be opened.\n", path);
+                            } else puts("[-] Error. File size is zero.");
+                        }
+                    }
                 }
             }
-        }
+        } else puts("[-] Index does not exist.");
         AMDServiceConnectionInvalidate(serviceConnection);
+        if (imageList) CFRelease(imageList);
     }
     AMDeviceStopSession(device);
 }

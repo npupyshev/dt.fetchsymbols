@@ -7,12 +7,14 @@ fetchsymbols [Options]
 
 Options:
 
-  -l        -  List available files.
+  -l           -  List available files.
   
-  -f n path -  Download file with index n to path 'path'.
+  -f n path    -  Download file with index n to path 'path'.
   
-  -c path   -  Download dyld shared cache to path 'path'.
+  -c path      -  Download dyld shared cache to path 'path'.
+
+  -C arch path -  Download dyld shared cache for architecture 'arch' to path 'path'.
   
-  -d path   -  Download /usr/lib/dyld to path 'path'.
+  -d path      -  Download /usr/lib/dyld to path 'path'.
   
-  -h        -  Display this message.
+  -h           -  Display this message.

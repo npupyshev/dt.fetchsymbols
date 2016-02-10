@@ -7,6 +7,7 @@
 AMDeviceNotificationRef notification;
 AMDeviceRef device;
 const char *shared_cache_path = NULL;
+const char *shared_cache_arch = NULL;
 const char *dyld_path         = NULL;
 uint32_t    file_index        = 0;
 const char *file_path         = NULL;
@@ -32,13 +33,13 @@ static inline unsigned long long bswap_64(unsigned long long x) {
 }
 
 CFDictionaryRef listFilesPlistCommand(void);
-void getFileCommand(uint32_t index, const char *path);
+void getFileCommand(int index, const char *path);
 void help(void);
 
-#define DTPathToFileAtIndex(idx) CFStringGetCStringPtr(CFArrayGetValueAtIndex(CFDictionaryGetValue(listFilesPlistCommand(), CFSTR("files")), (CFIndex)idx), CFStringGetSystemEncoding())
+#define DTPathToFileAtIndex(files, idx) CFStringGetCStringPtr(CFArrayGetValueAtIndex(files, (CFIndex)idx), CFStringGetSystemEncoding())
 
-uint32_t getDyldIndex() {
-    uint32_t index = 0;
+int getDyldIndex() {
+    int index = 0;
     CFDictionaryRef response = listFilesPlistCommand();
     
     if (response != NULL) {
@@ -47,7 +48,8 @@ uint32_t getDyldIndex() {
         if (filesList != NULL) {
             for (CFIndex i = 0; i < CFArrayGetCount(filesList); i++) {
                 if (CFEqual(CFArrayGetValueAtIndex(filesList, i), CFSTR("/usr/lib/dyld"))) {
-                    index = (uint32_t)i;
+                    index = (int)i;
+					break;
                 }
             }
             CFRelease(filesList);
@@ -57,21 +59,55 @@ uint32_t getDyldIndex() {
     return index;
 }
 
-uint32_t getDyldSharedCacheIndex() {
-    uint32_t index = 1;
+int getDyldSharedCacheIndex(CFStringRef architecture) {
+    int32_t index = -1;
     CFDictionaryRef response = listFilesPlistCommand();
+	CFStringRef sharedCachePath = CFSTR("/System/Library/Caches/com.apple.dyld/dyld_shared_cache_");
     
     if (response != NULL) {
         CFArrayRef filesList;
         filesList = CFDictionaryGetValue(response, CFSTR("files"));
-        if (filesList != NULL) {
+		
+		if (architecture) {
+			CFStringRef strings[] = {sharedCachePath, architecture};
+			CFArrayRef stringsArray = CFArrayCreate(kCFAllocatorDefault, (const void **)strings, 2, &kCFTypeArrayCallBacks);
+			if (stringsArray) {
+				sharedCachePath = CFStringCreateByCombiningStrings(kCFAllocatorDefault, stringsArray, CFSTR(""));
+			} else {
+				puts("[!] Unexpected CoreFoundation error.");
+				architecture = NULL;
+			}
+			CFRelease(stringsArray);
+		}
+		
+		if (filesList != NULL) {
+			bool match;
             for (CFIndex i = 0; i < CFArrayGetCount(filesList); i++) {
-                if (CFStringFind(CFArrayGetValueAtIndex(filesList, i), CFSTR("/System/Library/Caches/com.apple.dyld/dyld_shared_cache_"), 0).length == 56) {
-                    index = (uint32_t)i;
+				if (architecture) match = CFEqual(CFArrayGetValueAtIndex(filesList, i), sharedCachePath);
+				else match = CFStringFind(CFArrayGetValueAtIndex(filesList, i), sharedCachePath, 0).length != 0;
+                if (match) {
+                    index = (int)i;
+					break;
                 }
             }
+			if (!match) {
+				if (architecture) {
+					CFStringRef message = CFStringCreateWithFormat(kCFAllocatorDefault, 0, CFSTR("[-] Can't find dyld shared cache for architecture %@."), architecture);
+					if (message) {
+						CFShow(message);
+						CFRelease(message);
+					} else
+						puts("[-] Can't find dyld shared cache for the given architecture.");
+				}
+				else
+					puts("[-] Can't find dyld shared cache.");
+			}
             CFRelease(filesList);
         }
+		
+		if (architecture) {
+			CFRelease(sharedCachePath);
+		}
     }
     
     return index;
@@ -104,7 +140,9 @@ CFDictionaryRef listFilesPlistCommand() {
  * index - the index of file in an array returned by ListFiles or ListFilesPlist command.
  *  path - where to save the file on the host machine.
  */
-void getFileCommand(uint32_t index, const char *path) {
+void getFileCommand(int index, const char *path) {
+	if (index < 0) return;
+	
     mach_error_t ret = MDERR_OK;
     AMDServiceConnectionRef serviceConnection = NULL;
     
@@ -156,7 +194,7 @@ void getFileCommand(uint32_t index, const char *path) {
                                     
                                     void *map = mmap(0, size, PROT_WRITE | PROT_READ, MAP_SHARED, file, 0);
                                     if (map != MAP_FAILED) {
-                                        printf("[*] Receiving %s...\n", DTPathToFileAtIndex(index));
+                                        printf("[*] Receiving %s...\n", DTPathToFileAtIndex(files, index));
                                         rsize = AMDServiceConnectionReceive(serviceConnection, map, size);
                                         while (rsize < size) {
                                             rsize += AMDServiceConnectionReceive(serviceConnection, (void *)(map + rsize), size-rsize);
@@ -165,7 +203,7 @@ void getFileCommand(uint32_t index, const char *path) {
                                             }
                                             printf("[*] Received %3.2f MB of %3.2f MB (%llu%%).\n\e[1A", (double)rsize/(1024*1024), (double)size/(1024*1024),(uint64_t)((double)rsize/(double)size*100));
                                         }
-                                        if (rsize == size) printf("\n[+] Done receiving %s.\n", DTPathToFileAtIndex(index));
+                                        if (rsize == size) printf("\n[+] Done receiving %s.\n", DTPathToFileAtIndex(files, index));
                                         munmap(map, size);
                                     } else puts("[-] Error. Please restart the program.");
                                     close(file);
@@ -190,7 +228,7 @@ void device_notification_callback(struct am_device_notification_callback_info *i
                     device = info->dev;
                     CFShow(CFStringCreateWithFormat(CFAllocatorGetDefault(), NULL, CFSTR("\e[1A[+] Device connected: %@, iOS %@."), AMDeviceCopyValue(device, NULL, CFSTR("ProductType")), AMDeviceCopyValue(device, NULL, CFSTR("ProductVersion"))));
                     
-                    if (list_files) {
+					if (list_files) {
                         CFDictionaryRef response = listFilesPlistCommand();
                         if (response) {
                         CFArrayRef files = CFDictionaryGetValue(response, CFSTR("files"));
@@ -204,7 +242,16 @@ void device_notification_callback(struct am_device_notification_callback_info *i
                     
                     if (file_path) getFileCommand(file_index, file_path);
                     
-                    if (shared_cache_path) getFileCommand(getDyldSharedCacheIndex(), shared_cache_path);
+					if (shared_cache_path) {
+						CFStringRef architecture = NULL;
+						if (shared_cache_arch) {
+							architecture = CFStringCreateWithCStringNoCopy(kCFAllocatorDefault, shared_cache_arch, CFStringGetSystemEncoding(), kCFAllocatorNull);
+						}
+						getFileCommand(getDyldSharedCacheIndex(architecture), shared_cache_path);
+						if (architecture) {
+							CFRelease(architecture);
+						}
+					}
                     
                     if (dyld_path) getFileCommand(getDyldIndex(), dyld_path);
                     
@@ -238,7 +285,14 @@ int main(int argc, const char * argv[]) {
                 shared_cache_path = argv[++i];
             else
                 help();
-        }
+		}
+		else if (!strcmp(argv[i], "-C")) {
+			if ((i + 2) < argc) {
+				shared_cache_arch = argv[++i];
+				shared_cache_path = argv[++i];
+			} else
+				help();
+		}
         else if (!strcmp(argv[i], "-d")) {
             if ((i + 1) < argc)
                 dyld_path = argv[++i];
@@ -268,15 +322,15 @@ int main(int argc, const char * argv[]) {
 }
 
 void help() {
-    puts("\n[*] DTFetchSymbols client v1.0");
+    puts("\n[*] DTFetchSymbols client v1.1");
     puts(" Your iOS device needs a mounted developer image to");
     puts(" use this tool.\n");
     puts(" Options:");
-    puts("  -l        -  List available files.");
-    puts("  -f n path -  Download file with index n to path 'path'.");
-    puts("  -c path   -  Download dyld shared cache to path 'path'.");
-    puts("  -d path   -  Download /usr/lib/dyld to path 'path'.\n");
-    puts("  -h        -  Display this message.");
-    puts("[*] Author: https://theiphonewiki.com/wiki/User:npupyshev\n");
+    puts("  -l           -  List available files.");
+    puts("  -f n path    -  Download file with index n to path 'path'.");
+	puts("  -c path      -  Download dyld shared cache to path 'path'.");
+	puts("  -C arch path -  Download dyld shared cache for architecture 'arch' to path 'path'.");
+    puts("  -d path      -  Download /usr/lib/dyld to path 'path'.");
+    puts("  -h           -  Display this message.");
     exit(0);
 }
